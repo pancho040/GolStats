@@ -1,0 +1,46 @@
+{
+  "telegram_token": "8625134541:AAF9rIgAedmaefjYh5HdyFptgjuScjqhuEM",
+  "chat_id": 1365657271,
+  "timezone_offset_hours": -4,
+  "timezone_name": "Hora de Bolivia (UTC-4)",
+  "teams": [
+    "Manchester City",
+    "Arsenal",
+    "Liverpool",
+    "Manchester United",
+    "Chelsea",
+    "Tottenham Hotspur",
+    "Real Madrid",
+    "Barcelona",
+    "Atlético de Madrid"
+  ],
+  "leagues": [
+    {
+      "code": "bol.1",
+      "name": "División Profesional de Bolivia",
+      "follow_all": true,
+      "knockout_only": false
+    },
+    {
+      "code": "eng.1",
+      "name": "Premier League",
+      "follow_all": false,
+      "knockout_only": false
+    },
+    {
+      "code": "esp.1",
+      "name": "La Liga",
+      "follow_all": false,
+      "knockout_only": false
+    },
+    {
+      "code": "uefa.champions",
+      "name": "UEFA Champions League",
+      "follow_all": false,
+      "knockout_only": true
+    }
+  ],
+  "alert_window_hours_early": 24,
+  "alert_window_minutes_pre": 60,
+  "check_interval_seconds": 300
+}
