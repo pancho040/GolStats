@@ -6,10 +6,11 @@ from datetime import datetime, timezone, timedelta
 BOLIVIA_TZ = timezone(timedelta(hours=-4))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    "User-Agent": "ESPN/7.0.0 (Android 14; Mobile; rv:1.0)",
+    "Accept": "*/*"
 }
 
-def fetch_json(url, timeout=10):
+def fetch_json(url, timeout=12):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=timeout)
         if resp.status_code == 200:
@@ -33,7 +34,8 @@ def parse_iso_date(date_str):
         return None
 
 def get_league_events(league_code, dates=None):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard"
+    # Usar site.web.api.espn.com que es la API web pública y no bloquea servidores en la nube
+    url = f"https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard"
     if dates:
         url += f"?dates={dates}"
     
