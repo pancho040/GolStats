@@ -1,25 +1,52 @@
 ﻿import json
 import requests
 import urllib.parse
+import re
 from datetime import datetime, timezone, timedelta
 
 BOLIVIA_TZ = timezone(timedelta(hours=-4))
 
-HEADERS = {
-    "User-Agent": "ESPN/7.0.0 (Android 14; Mobile; rv:1.0)",
-    "Accept": "*/*"
-}
+HEADERS_LIST = [
+    {"User-Agent": "ESPN/7.0.0 (Android 14; Mobile; rv:1.0)", "Accept": "*/*"},
+    {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", "Accept": "*/*"}
+]
 
-def fetch_json(url, timeout=8):
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=timeout)
-        if resp.status_code == 200:
-            return resp.json()
-        print(f"Error {resp.status_code} consultando {url}", flush=True)
-        return None
-    except Exception as e:
-        print(f"Excepción consultando {url}: {e}", flush=True)
-        return None
+MIRRORS = [
+    "https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard"
+]
+
+def fetch_json_with_fallbacks(league_code, date_param=None, timeout=7):
+    """Consulta ESPN rotando espejos y cabeceras con reintentos automáticos."""
+    clean_date = None
+    if date_param:
+        # Sanitizar estrictamente: solo aceptar 8 dígitos numéricos YYYYMMDD
+        match = re.match(r"^\d{8}$", str(date_param))
+        if match:
+            clean_date = match.group(0)
+            
+    for mirror_tmpl in MIRRORS:
+        base_url = mirror_tmpl.format(league_code=league_code)
+        url = f"{base_url}?dates={clean_date}" if clean_date else base_url
+        
+        for headers in HEADERS_LIST:
+            try:
+                resp = requests.get(url, headers=headers, timeout=timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Si devuelve JSON válido con clave events
+                    if "events" in data:
+                        return data
+                elif resp.status_code in [400, 404]:
+                    # Si falló por la fecha, intentar de inmediato la jornada actual sin fecha
+                    if clean_date:
+                        fallback_resp = requests.get(base_url, headers=headers, timeout=timeout)
+                        if fallback_resp.status_code == 200:
+                            return fallback_resp.json()
+            except Exception:
+                continue
+                
+    return None
 
 def parse_iso_date(date_str):
     if not date_str:
@@ -44,14 +71,13 @@ def parse_raw_event(ev, league_code, league_name):
     competitions = ev.get("competitions", [{}])[0]
     status_info = ev.get("status", {})
     status_type = status_info.get("type", {})
-    state = status_type.get("state", "pre")  # "pre", "in", "post"
+    state = status_type.get("state", "pre")
     completed = status_type.get("completed", False)
     clock = status_info.get("displayClock", "")
     detail_status = status_type.get("detail", "")
     
     venue = competitions.get("venue", {}).get("fullName", "")
     
-    # Equipos
     competitors = competitions.get("competitors", [])
     home_team = {}
     away_team = {}
@@ -69,7 +95,6 @@ def parse_raw_event(ev, league_code, league_name):
         else:
             away_team = t_info
     
-    # Goles y tarjetas
     details = competitions.get("details", [])
     goals = []
     for d in details:
@@ -87,7 +112,6 @@ def parse_raw_event(ev, league_code, league_name):
                 "is_home": is_home
             })
     
-    # Estadísticas resumidas (posesión y tiros)
     def extract_stat(stats_list, stat_name):
         for s in stats_list:
             if s.get("name") == stat_name:
@@ -101,7 +125,6 @@ def parse_raw_event(ev, league_code, league_name):
     home_sog = extract_stat(home_team.get("stats_raw", []), "shotsOnTarget")
     away_sog = extract_stat(away_team.get("stats_raw", []), "shotsOnTarget")
     
-    # Enlaces de video / highlights
     video_link = None
     for l in ev.get("links", []):
         rel = l.get("rel", [])
@@ -109,7 +132,6 @@ def parse_raw_event(ev, league_code, league_name):
             video_link = l.get("href")
             break
     
-    # Si no hay link directo de ESPN, crear búsqueda de YouTube
     if not video_link and home_team.get("name") and away_team.get("name"):
         query = f"{home_team.get('name')} vs {away_team.get('name')} resumen goles"
         video_link = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
@@ -143,9 +165,6 @@ def parse_raw_event(ev, league_code, league_name):
     }
 
 def get_league_events(league_code, dates=None):
-    base_url = f"https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard"
-    
-    # Si no se especifican fechas, consultar el scoreboard por defecto
     if not dates:
         date_queries = [None]
     elif isinstance(dates, str):
@@ -157,11 +176,7 @@ def get_league_events(league_code, dates=None):
         
     events_by_id = {}
     for d in date_queries:
-        url = base_url
-        if d:
-            url += f"?dates={d}"
-        
-        data = fetch_json(url)
+        data = fetch_json_with_fallbacks(league_code, date_param=d)
         if not data:
             continue
             
@@ -170,6 +185,16 @@ def get_league_events(league_code, dates=None):
             ev_id = str(ev.get("id"))
             if ev_id not in events_by_id:
                 events_by_id[ev_id] = parse_raw_event(ev, league_code, league_name)
+                
+    # Si después de consultar las fechas no hubo ningún evento, hacer un intento de rescate con la jornada actual
+    if not events_by_id and dates:
+        data_rescue = fetch_json_with_fallbacks(league_code, date_param=None)
+        if data_rescue:
+            league_name = data_rescue.get("leagues", [{}])[0].get("name", league_code)
+            for ev in data_rescue.get("events", []):
+                ev_id = str(ev.get("id"))
+                if ev_id not in events_by_id:
+                    events_by_id[ev_id] = parse_raw_event(ev, league_code, league_name)
                 
     return list(events_by_id.values())
 
@@ -190,11 +215,9 @@ def is_event_relevant(event, config):
     if not lg_cfg:
         return False
         
-    # Si la liga tiene activa la opción follow_all (como la liga boliviana)
     if lg_cfg.get("follow_all"):
         return True
         
-    # Si es Champions League y está configurado solo eliminatorias
     if league_code == "uefa.champions" and lg_cfg.get("knockout_only"):
         slug = event.get("season_slug", "").lower()
         is_knockout = any(k in slug for k in ["knockout", "round-of-16", "quarter", "semi", "final"])
@@ -202,5 +225,4 @@ def is_event_relevant(event, config):
             return True
         return is_team_match(event, config.get("teams", []))
         
-    # Para cualquier otra liga, verificar si juega uno de los equipos favoritos
     return is_team_match(event, config.get("teams", []))
