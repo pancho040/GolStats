@@ -1,0 +1,17 @@
+﻿name: GolStats 24/7 KeepAlive & Watchdog
+
+on:
+  schedule:
+    # Se ejecuta automáticamente cada 14 minutos desde los servidores de GitHub
+    - cron: '*/14 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping al bot en Render para mantenerlo 24/7 activo
+        run: |
+          echo "Verificando estado de GolStats..."
+          RESPONSE=$(curl -s -m 45 https://golstats.onrender.com || true)
+          echo "Respuesta del bot: $RESPONSE"
