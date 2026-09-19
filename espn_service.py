@@ -10,15 +10,15 @@ HEADERS = {
     "Accept": "*/*"
 }
 
-def fetch_json(url, timeout=12):
+def fetch_json(url, timeout=8):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
-        print(f"Error {resp.status_code} consultando {url}")
+        print(f"Error {resp.status_code} consultando {url}", flush=True)
         return None
     except Exception as e:
-        print(f"Excepción consultando {url}: {e}")
+        print(f"Excepción consultando {url}: {e}", flush=True)
         return None
 
 def parse_iso_date(date_str):
@@ -33,130 +33,145 @@ def parse_iso_date(date_str):
     except Exception:
         return None
 
+def parse_raw_event(ev, league_code, league_name):
+    event_id = str(ev.get("id"))
+    name = ev.get("name", "")
+    short_name = ev.get("shortName", "")
+    dt_utc = parse_iso_date(ev.get("date"))
+    dt_local = dt_utc.astimezone(BOLIVIA_TZ) if dt_utc else None
+    
+    season_slug = ev.get("season", {}).get("slug", "")
+    competitions = ev.get("competitions", [{}])[0]
+    status_info = ev.get("status", {})
+    status_type = status_info.get("type", {})
+    state = status_type.get("state", "pre")  # "pre", "in", "post"
+    completed = status_type.get("completed", False)
+    clock = status_info.get("displayClock", "")
+    detail_status = status_type.get("detail", "")
+    
+    venue = competitions.get("venue", {}).get("fullName", "")
+    
+    # Equipos
+    competitors = competitions.get("competitors", [])
+    home_team = {}
+    away_team = {}
+    for c in competitors:
+        t_info = {
+            "id": c.get("id"),
+            "name": c.get("team", {}).get("displayName", ""),
+            "short_name": c.get("team", {}).get("shortDisplayName", ""),
+            "score": c.get("score"),
+            "logo": c.get("team", {}).get("logo", ""),
+            "stats_raw": c.get("statistics", [])
+        }
+        if c.get("homeAway") == "home":
+            home_team = t_info
+        else:
+            away_team = t_info
+    
+    # Goles y tarjetas
+    details = competitions.get("details", [])
+    goals = []
+    for d in details:
+        d_type = d.get("type", {}).get("text", "")
+        if "Goal" in d_type:
+            clock_str = d.get("clock", {}).get("displayValue", "")
+            athletes = [a.get("displayName", "") for a in d.get("athletesInvolved", [])]
+            scorer = athletes[0] if athletes else "Gol"
+            t_id = str(d.get("team", {}).get("id"))
+            is_home = (t_id == str(home_team.get("id")))
+            goals.append({
+                "player": scorer,
+                "minute": clock_str,
+                "team": home_team.get("name") if is_home else away_team.get("name"),
+                "is_home": is_home
+            })
+    
+    # Estadísticas resumidas (posesión y tiros)
+    def extract_stat(stats_list, stat_name):
+        for s in stats_list:
+            if s.get("name") == stat_name:
+                return s.get("displayValue", "-")
+        return "-"
+    
+    home_possession = extract_stat(home_team.get("stats_raw", []), "possessionPct")
+    away_possession = extract_stat(away_team.get("stats_raw", []), "possessionPct")
+    home_shots = extract_stat(home_team.get("stats_raw", []), "totalShots")
+    away_shots = extract_stat(away_team.get("stats_raw", []), "totalShots")
+    home_sog = extract_stat(home_team.get("stats_raw", []), "shotsOnTarget")
+    away_sog = extract_stat(away_team.get("stats_raw", []), "shotsOnTarget")
+    
+    # Enlaces de video / highlights
+    video_link = None
+    for l in ev.get("links", []):
+        rel = l.get("rel", [])
+        if "highlights" in rel or l.get("text") == "Highlights":
+            video_link = l.get("href")
+            break
+    
+    # Si no hay link directo de ESPN, crear búsqueda de YouTube
+    if not video_link and home_team.get("name") and away_team.get("name"):
+        query = f"{home_team.get('name')} vs {away_team.get('name')} resumen goles"
+        video_link = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
+    
+    return {
+        "id": event_id,
+        "name": name,
+        "short_name": short_name,
+        "date_utc": dt_utc,
+        "date_local": dt_local,
+        "league_code": league_code,
+        "league_name": league_name,
+        "season_slug": season_slug,
+        "venue": venue,
+        "state": state,
+        "completed": completed,
+        "clock": clock,
+        "detail_status": detail_status,
+        "home_team": home_team,
+        "away_team": away_team,
+        "goals": goals,
+        "stats": {
+            "home_possession": home_possession,
+            "away_possession": away_possession,
+            "home_shots": home_shots,
+            "away_shots": away_shots,
+            "home_sog": home_sog,
+            "away_sog": away_sog
+        },
+        "video_link": video_link
+    }
+
 def get_league_events(league_code, dates=None):
-    # Usar site.web.api.espn.com que es la API web pública y no bloquea servidores en la nube
-    url = f"https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard"
-    if dates:
-        url += f"?dates={dates}"
+    base_url = f"https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league_code}/scoreboard"
     
-    data = fetch_json(url)
-    if not data:
-        return []
-    
-    league_name = data.get("leagues", [{}])[0].get("name", league_code)
-    events = data.get("events", [])
-    parsed_events = []
-    
-    for ev in events:
-        event_id = str(ev.get("id"))
-        name = ev.get("name", "")
-        short_name = ev.get("shortName", "")
-        dt_utc = parse_iso_date(ev.get("date"))
-        dt_local = dt_utc.astimezone(BOLIVIA_TZ) if dt_utc else None
+    # Si no se especifican fechas, consultar el scoreboard por defecto
+    if not dates:
+        date_queries = [None]
+    elif isinstance(dates, str):
+        date_queries = [dates]
+    elif isinstance(dates, (list, tuple, set)):
+        date_queries = list(dates)
+    else:
+        date_queries = [None]
         
-        season_slug = ev.get("season", {}).get("slug", "")
-        competitions = ev.get("competitions", [{}])[0]
-        status_info = ev.get("status", {})
-        status_type = status_info.get("type", {})
-        state = status_type.get("state", "pre")  # "pre", "in", "post"
-        completed = status_type.get("completed", False)
-        clock = status_info.get("displayClock", "")
-        detail_status = status_type.get("detail", "")
+    events_by_id = {}
+    for d in date_queries:
+        url = base_url
+        if d:
+            url += f"?dates={d}"
         
-        venue = competitions.get("venue", {}).get("fullName", "")
-        
-        # Equipos
-        competitors = competitions.get("competitors", [])
-        home_team = {}
-        away_team = {}
-        for c in competitors:
-            t_info = {
-                "id": c.get("id"),
-                "name": c.get("team", {}).get("displayName", ""),
-                "short_name": c.get("team", {}).get("shortDisplayName", ""),
-                "score": c.get("score"),
-                "logo": c.get("team", {}).get("logo", ""),
-                "stats_raw": c.get("statistics", [])
-            }
-            if c.get("homeAway") == "home":
-                home_team = t_info
-            else:
-                away_team = t_info
-        
-        # Goles y tarjetas
-        details = competitions.get("details", [])
-        goals = []
-        for d in details:
-            d_type = d.get("type", {}).get("text", "")
-            if "Goal" in d_type:
-                clock_str = d.get("clock", {}).get("displayValue", "")
-                athletes = [a.get("displayName", "") for a in d.get("athletesInvolved", [])]
-                scorer = athletes[0] if athletes else "Gol"
-                t_id = str(d.get("team", {}).get("id"))
-                is_home = (t_id == str(home_team.get("id")))
-                goals.append({
-                    "player": scorer,
-                    "minute": clock_str,
-                    "team": home_team.get("name") if is_home else away_team.get("name"),
-                    "is_home": is_home
-                })
-        
-        # Estadísticas resumidas (posesión y tiros)
-        def extract_stat(stats_list, stat_name):
-            for s in stats_list:
-                if s.get("name") == stat_name:
-                    return s.get("displayValue", "-")
-            return "-"
-        
-        home_possession = extract_stat(home_team.get("stats_raw", []), "possessionPct")
-        away_possession = extract_stat(away_team.get("stats_raw", []), "possessionPct")
-        home_shots = extract_stat(home_team.get("stats_raw", []), "totalShots")
-        away_shots = extract_stat(away_team.get("stats_raw", []), "totalShots")
-        home_sog = extract_stat(home_team.get("stats_raw", []), "shotsOnTarget")
-        away_sog = extract_stat(away_team.get("stats_raw", []), "shotsOnTarget")
-        
-        # Enlaces de video / highlights
-        video_link = None
-        for l in ev.get("links", []):
-            rel = l.get("rel", [])
-            if "highlights" in rel or l.get("text") == "Highlights":
-                video_link = l.get("href")
-                break
-        
-        # Si no hay link directo de ESPN, crear búsqueda de YouTube
-        if not video_link and home_team.get("name") and away_team.get("name"):
-            query = f"{home_team.get('name')} vs {away_team.get('name')} resumen goles"
-            video_link = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
-        
-        parsed_events.append({
-            "id": event_id,
-            "name": name,
-            "short_name": short_name,
-            "date_utc": dt_utc,
-            "date_local": dt_local,
-            "league_code": league_code,
-            "league_name": league_name,
-            "season_slug": season_slug,
-            "venue": venue,
-            "state": state,
-            "completed": completed,
-            "clock": clock,
-            "detail_status": detail_status,
-            "home_team": home_team,
-            "away_team": away_team,
-            "goals": goals,
-            "stats": {
-                "home_possession": home_possession,
-                "away_possession": away_possession,
-                "home_shots": home_shots,
-                "away_shots": away_shots,
-                "home_sog": home_sog,
-                "away_sog": away_sog
-            },
-            "video_link": video_link
-        })
-        
-    return parsed_events
+        data = fetch_json(url)
+        if not data:
+            continue
+            
+        league_name = data.get("leagues", [{}])[0].get("name", league_code)
+        for ev in data.get("events", []):
+            ev_id = str(ev.get("id"))
+            if ev_id not in events_by_id:
+                events_by_id[ev_id] = parse_raw_event(ev, league_code, league_name)
+                
+    return list(events_by_id.values())
 
 def is_team_match(event, team_list):
     home_name = event["home_team"].get("name", "").lower()

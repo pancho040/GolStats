@@ -20,22 +20,20 @@ def save_state(state):
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
     except Exception as e:
-        print(f"Error guardando estado: {e}")
+        print(f"Error guardando estado: {e}", flush=True)
 
 def check_and_notify(config, tg_service):
     state = load_state()
     now_utc = datetime.now(timezone.utc)
     
-    # Buscamos eventos de hoy, ayer y los próximos 2 días
-    dt_from = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
-    dt_to = (now_utc + timedelta(days=3)).strftime("%Y%m%d")
-    dates_param = f"{dt_from}-{dt_to}"
+    # Consultar ayer, hoy, mañana y pasado mañana individualmente (sin guiones)
+    dates_list = [(now_utc + timedelta(days=i)).strftime("%Y%m%d") for i in range(-1, 3)]
     
     leagues = config.get("leagues", [])
     relevant_matches = []
     
     for lg in leagues:
-        events = espn_service.get_league_events(lg["code"], dates=dates_param)
+        events = espn_service.get_league_events(lg["code"], dates=dates_list)
         for ev in events:
             if espn_service.is_event_relevant(ev, config):
                 relevant_matches.append(ev)
@@ -55,7 +53,7 @@ def check_and_notify(config, tg_service):
                 msg = tg_service.format_24h_alert(match)
                 if tg_service.send_message(msg):
                     state["alert_24h"].append(match_id)
-                    print(f"Alerta 24h enviada: {match['name']}")
+                    print(f"Alerta 24h enviada: {match['name']}", flush=True)
 
         # 2. Alerta de 1 hora antes (ventana entre 30 y 90 minutos antes)
         if 30 <= diff_min <= 90:
@@ -63,17 +61,16 @@ def check_and_notify(config, tg_service):
                 msg = tg_service.format_1h_alert(match)
                 if tg_service.send_message(msg):
                     state["alert_1h"].append(match_id)
-                    print(f"Alerta 1h enviada: {match['name']}")
+                    print(f"Alerta 1h enviada: {match['name']}", flush=True)
 
         # 3. Resumen post-partido (partido finalizado en las últimas 12 horas)
         if match["completed"] or match["state"] == "post":
-            # Si terminó hace menos de 12 horas (diff_min < 0)
             if -720 <= diff_min <= 0:
                 if match_id not in state["recap"]:
                     msg = tg_service.format_postmatch_recap(match)
                     if tg_service.send_message(msg):
                         state["recap"].append(match_id)
-                        print(f"Resumen enviado: {match['name']}")
+                        print(f"Resumen enviado: {match['name']}", flush=True)
 
     # Limpiar IDs viejos para no saturar memoria (mantener últimos 300)
     for key in ["alert_24h", "alert_1h", "recap"]:

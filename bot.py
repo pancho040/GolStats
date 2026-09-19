@@ -95,39 +95,37 @@ def handle_command(text, chat_id, cfg, tg):
     elif cmd in ["/proximos", "/fixtures"]:
         tg.send_message("Buscando próximos partidos...", chat_id=chat_id)
         now_utc = datetime.now(timezone.utc)
-        dt_from = now_utc.strftime("%Y%m%d")
-        dt_to = (now_utc + timedelta(days=7)).strftime("%Y%m%d")
-        dates_param = f"{dt_from}-{dt_to}"
+        dates_list = [(now_utc + timedelta(days=i)).strftime("%Y%m%d") for i in range(7)]
         
         upcoming = []
         for lg in cfg.get("leagues", []):
-            events = espn_service.get_league_events(lg["code"], dates=dates_param)
+            events = espn_service.get_league_events(lg["code"], dates=dates_list)
             for ev in events:
                 if ev.get("state") == "pre" and espn_service.is_event_relevant(ev, cfg):
                     upcoming.append(ev)
                     
         upcoming.sort(key=lambda x: x["date_utc"] if x.get("date_utc") else datetime.max.replace(tzinfo=timezone.utc))
-        msg = tg.format_upcoming_list(upcoming[:15])
+        msg = tg.format_upcoming_list(upcoming[:20])
         tg.send_message(msg, chat_id=chat_id)
         
     elif cmd in ["/resultados", "/results"]:
         tg.send_message("Buscando resultados recientes...", chat_id=chat_id)
         now_utc = datetime.now(timezone.utc)
-        dt_from = (now_utc - timedelta(days=2)).strftime("%Y%m%d")
-        dt_to = now_utc.strftime("%Y%m%d")
-        dates_param = f"{dt_from}-{dt_to}"
+        dates_list = [(now_utc - timedelta(days=i)).strftime("%Y%m%d") for i in range(4)]
         
         finished = []
         for lg in cfg.get("leagues", []):
-            events = espn_service.get_league_events(lg["code"], dates=dates_param)
+            events = espn_service.get_league_events(lg["code"], dates=dates_list)
             for ev in events:
                 if (ev.get("completed") or ev.get("state") == "post") and espn_service.is_event_relevant(ev, cfg):
                     finished.append(ev)
                     
         if not finished:
-            tg.send_message("No se encontraron resultados de tus equipos en las últimas 48 horas.", chat_id=chat_id)
+            tg.send_message("No se encontraron resultados de tus equipos en los últimos días.", chat_id=chat_id)
         else:
-            for m in finished[-3:]:
+            # Ordenar por fecha más reciente
+            finished.sort(key=lambda x: x["date_utc"] if x.get("date_utc") else datetime.min.replace(tzinfo=timezone.utc))
+            for m in finished[-4:]:
                 tg.send_message(tg.format_postmatch_recap(m), chat_id=chat_id)
 
 def poll_telegram_updates(cfg, tg, stop_event):
@@ -173,18 +171,14 @@ def main():
     
     stop_event = threading.Event()
     
-    # Iniciar servidor de salud en segundo plano para hosting gratuito
     t_health = threading.Thread(target=run_healthcheck_server, daemon=True)
     t_health.start()
     
-    # Hilo para responder comandos de Telegram
     t_poll = threading.Thread(target=poll_telegram_updates, args=(cfg, tg, stop_event), daemon=True)
     t_poll.start()
     
-    # Ejecutar primera verificación de partidos de inmediato
     scheduler.check_and_notify(cfg, tg)
     
-    # Hilo para el scheduler periódico
     t_sched = threading.Thread(target=scheduler_loop, args=(cfg, tg, stop_event), daemon=True)
     t_sched.start()
     
